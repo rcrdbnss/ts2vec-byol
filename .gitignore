@@ -1,0 +1,6 @@
+datasets/
+models/
+!ts2vec/models
+results/
+configs.json
+.idea/

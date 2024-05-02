@@ -9,42 +9,15 @@ from tqdm.auto import tqdm
 from byol import BYOL
 from ts2vec import TS2Vec
 from ts2vec.utils import split_with_nan, centerize_vary_length_series, take_per_row
-from ts2vec_byol.arch import SimpleArchitecture, LSTMArchitecture, ProjectorArchitecture
+from ts2vec_byol.arch import SimpleArchitecture, LSTMArchitecture, ProjectorArchitecture, TS2VecProjectorArchitecture
 from ts2vec_byol.losses import cross_cosine_loss, hierarchical_loss
-
-
-# mutable arguments are necessary to be able to update the value of crop_l later
-
-# def hierarchical_loss_overlap(args_dict={'crop_l': 0, 'loss_fn': cross_cosine_loss}):
-#     def _fn(online_pred_1, online_pred_2, target_proj_1, target_proj_2):
-#         crop_l = args_dict['crop_l']
-#         loss_fn = args_dict['loss_fn']
-#         online_pred_1 = online_pred_1[:, -crop_l:]
-#         online_pred_2 = online_pred_2[:, :crop_l]
-#         target_proj_1 = target_proj_1.detach()[:, -crop_l:]
-#         target_proj_2 = target_proj_2.detach()[:, :crop_l]
-#         return hierarchical_loss(online_pred_1, online_pred_2, target_proj_1, target_proj_2, loss_fn)
-#
-#     return _fn
-#
-#
-# def cross_cosine_loss_overlap(args_dict={'crop_l': 0}):
-#     def _fn(online_pred_1, online_pred_2, target_proj_1, target_proj_2):
-#         crop_l = args_dict['crop_l']
-#         return cross_cosine_loss(
-#             online_pred_1[:, -crop_l:],
-#             online_pred_2[:, :crop_l],
-#             target_proj_1.detach()[:, -crop_l:],
-#             target_proj_2.detach()[:, :crop_l]
-#         )
-#
-#     return _fn
 
 
 class TS2VecBYOL(TS2Vec):
     class CropOverlap(nn.Module):
 
         def __init__(self, crop_l_mutable: list[int]):
+            # mutable arguments are necessary to be able to update the value of crop_l later
             super().__init__()
             self.crop_l_mutable = crop_l_mutable
             self.n_aug = 0
@@ -74,7 +47,7 @@ class TS2VecBYOL(TS2Vec):
                  use_momentum=True,
                  hier_loss=False,
                  pred_hidden_dims=128,
-                 arch=None,  # None, 'lstm', 'proj'
+                 arch=None,  # None, 'lstm', 'proj', 'proj2'
                  proj_hidden_dims=128,
                  proj_output_dims=64,
                  ):
@@ -83,16 +56,20 @@ class TS2VecBYOL(TS2Vec):
 
         self.arch = arch
         if arch is None:
-            encoder, projector, predictor, loss_fn = SimpleArchitecture(
+            encoder, projector, predictor = SimpleArchitecture(
                 input_dims, output_dims, hidden_dims, depth, pred_hidden_dims
             )
         elif arch == 'lstm':
-            encoder, projector, predictor, loss_fn = LSTMArchitecture(
+            encoder, projector, predictor = LSTMArchitecture(
                 input_dims, output_dims, hidden_dims, depth, proj_hidden_dims, proj_output_dims, pred_hidden_dims,
                 hier_loss
             )
         elif arch == 'proj':
-            encoder, projector, predictor, loss_fn = ProjectorArchitecture(
+            encoder, projector, predictor = ProjectorArchitecture(
+                input_dims, output_dims, hidden_dims, depth, proj_hidden_dims, proj_output_dims, pred_hidden_dims
+            )
+        elif arch == 'proj2':
+            encoder, projector, predictor = TS2VecProjectorArchitecture(
                 input_dims, output_dims, hidden_dims, depth, proj_hidden_dims, proj_output_dims, pred_hidden_dims
             )
         else:
@@ -102,26 +79,16 @@ class TS2VecBYOL(TS2Vec):
             projector = projector.to(device)
         self.encoder, self.projector, self.predictor = encoder, projector, predictor
 
-        self._args_dict = {'crop_l': 0}
-
-        # if loss_fn is None:
-        #     if hier_loss:
-        #         self._args_dict['loss_fn'] = cross_cosine_loss
-        #         loss_fn = hierarchical_loss_overlap(self._args_dict)
-        #     else:
-        #         loss_fn = cross_cosine_loss_overlap(self._args_dict)
         if hier_loss:
-            # loss_fn = lambda *args: hierarchical_loss(*args, cross_cosine_loss)
             loss_fn = hierarchical_loss
         else:
             loss_fn = cross_cosine_loss
 
         self._net, self.net = None, encoder
         self._crop_l_mutable = [0]
-        _encoder = self._wrap_encoder()
 
         self._learner = BYOL(
-            encoder=_encoder,
+            encoder=self._wrap_encoder(),
             predictor=predictor,
             augment_fn=self.augment_fn,
             loss_fn=loss_fn,
@@ -219,9 +186,6 @@ class TS2VecBYOL(TS2Vec):
             if self.after_epoch_callback is not None:
                 self.after_epoch_callback(self, cum_loss)
 
-        # self.net = self._learner.online_encoder
-        # if self.arch in ['lstm', 'proj']:
-        #     self.net = self._learner.online_encoder[0]
         self.net = self._learner.online_encoder[0]  # only TSEncoder
         return losses
 
@@ -233,30 +197,12 @@ class TS2VecBYOL(TS2Vec):
         crop_eleft = np.random.randint(crop_left + 1)
         crop_eright = np.random.randint(low=crop_right, high=ts_l + 1)
         crop_offset = np.random.randint(low=-crop_eleft, high=ts_l - crop_eright + 1, size=x.size(0))
-        # self._crop_l = crop_l
-        # self._args_dict['crop_l'] = crop_l
         self._crop_l_mutable[0] = crop_l
 
         aug_one = take_per_row(x, crop_offset + crop_eleft, crop_right - crop_eleft)
         aug_two = take_per_row(x, crop_offset + crop_left, crop_eright - crop_left)
 
         return aug_one, aug_two
-
-    # def cross_cosine_loss_overlap(self, online_pred_1, online_pred_2, target_proj_1, target_proj_2):
-    #     return cross_cosine_loss(
-    #         online_pred_1[:, -self._crop_l:],
-    #         online_pred_2[:, :self._crop_l],
-    #         target_proj_1.detach()[:, -self._crop_l:],
-    #         target_proj_2.detach()[:, :self._crop_l]
-    #     )
-
-    # def hierarchical_loss_overlap(self, online_pred_1, online_pred_2, target_proj_1, target_proj_2,
-    #                               loss_fn=cross_cosine_loss):
-    #     online_pred_1 = online_pred_1[:, -self._crop_l:]
-    #     online_pred_2 = online_pred_2[:, :self._crop_l]
-    #     target_proj_1 = target_proj_1.detach()[:, -self._crop_l:]
-    #     target_proj_2 = target_proj_2.detach()[:, :self._crop_l]
-    #     return hierarchical_loss(online_pred_1, online_pred_2, target_proj_1, target_proj_2, loss_fn)
 
 
 class TS2VecBYOLAugs(TS2VecBYOL):

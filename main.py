@@ -7,15 +7,14 @@ import re
 import time
 
 import numpy as np
-import sklearn
 import torch.cuda
 
-from utils import Paths
 from ts2vec import TS2Vec
 from ts2vec import datautils
 from ts2vec import tasks
 from ts2vec.utils import init_dl_program
 from ts2vec_byol import TS2VecBYOL, TS2VecBYOLAugs
+from utils import Paths
 
 # def save_checkpoint_callback(
 #         save_every=1,
@@ -66,8 +65,8 @@ if __name__ == '__main__':
                         help='The hidden dimension of the predictor (defaults to 128)')
     parser.add_argument('--augs', action='store_true',
                         help='If set, augment time series with scaling, shifting and jittering. Otherwise, compare the overlapping section of two crops.')
-    parser.add_argument('--arch', type=str, choices=['lstm', 'proj'], default=None,
-                        help='The training architecture. It can be lstm or proj. If not set, it defaults to the simple architecture with only the encoder and the predictor')
+    parser.add_argument('--arch', type=str, choices=['lstm', 'proj', 'proj2'], default=None,
+                        help='The training architecture. It can be lstm, proj or proj2. If not set, it defaults to the simple architecture with only the encoder and the predictor')
     parser.add_argument('--proj-hidden-dims', type=int, default=128,
                         help='The hidden dimension of the projector (defaults to 128)')
     parser.add_argument('--proj-output-dims', type=int, default=64,
